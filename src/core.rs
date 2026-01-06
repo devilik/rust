@@ -31,6 +31,7 @@ pub struct OrderBookUpdate {
 pub struct InventoryUpdate {
     pub symbol_id: u64, // Opinion Market ID
     pub change: f64,    // 仓位变化 (如 +10.0, -5.0)
+    pub cost_usd: f64,
 }
 
 // 3. 交易信号 (策略 -> 执行)
