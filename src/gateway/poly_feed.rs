@@ -66,7 +66,8 @@ fn parse_poly_json(raw: &str) -> Option<OrderBookUpdate> {
     // 提取字段 (这里简化了错误处理)
     let timestamp = v["timestamp"].as_i64().unwrap_or(0);
     let asset_id_str = v["asset_id"].as_str()?;
-    
+    let asset_id_u256 = U256::from_str_radix(asset_id_str.trim_start_matches("0x"), 16).ok()?;
+    let symbol_id = asset_id_u256.low_u64();
     // 解析 Bids
     let mut bids = smallvec![];
     if let Some(arr) = v["bids"].as_array() {

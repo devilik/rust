@@ -1,44 +1,97 @@
 use ethers::prelude::*;
-use ethers::providers::{Provider, Ws};
-use crate::infrastructure::messaging::ZmqPublisher;
-use market_maker_core::{OrderBookUpdate, Exchange};
+use ethers::types::transaction::eip712::Eip712;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use rust_decimal::Decimal;
+use crate::core::{TradeSignal, Side}; 
 
-pub async fn run_opinion_chain_listener(zmq_pub: ZmqPublisher) {
-    // 1. 连接 Alchemy 的 WSS 节点 (必须是 WSS)
-    let ws_url = "wss://polygon-mainnet.g.alchemy.com/v2/YOUR_API_KEY";
-    let provider = Provider::<Ws>::connect(ws_url).await.expect("RPC Connect Error");
-    let provider = Arc::new(provider);
+// --- A. 定义 Opinion Labs 的订单结构 (EIP-712) ---
+#[derive(Debug, Clone, Eip712, EthAbiType, Serialize, Deserialize)]
+#[eip712(
+    name = "OpinionExchange",
+    version = "1",
+    chainId = 137,
+    verifyingContract = "0x..." // ⚠️ 务必替换为真实合约地址
+)]
+pub struct LimitOrder {
+    pub salt: u128,
+    pub maker: Address,
+    pub market_id: U256,
+    pub side: u8,
+    pub price: U256,
+    pub size: U256,
+    pub expiration: u64,
+}
 
-    // 2. 定义我们要听什么事件
-    // 假设这是 Opinion 核心合约地址
-    let contract_addr: Address = "0x123456...".parse().unwrap();
-    
-    // 过滤条件：只听这个合约产生的 "OrderMatched" 事件
-    let filter = Filter::new()
-        .address(contract_addr)
-        .event("OrderMatched(bytes32,uint256)"); // ABI 签名
+// --- B. 执行网关 ---
+pub struct OpinionMakerGateway {
+    wallet: LocalWallet,
+    http_client: reqwest::Client,
+    api_url: String,
+}
 
-    println!("👂 [Gateway] Listening to Opinion Labs Blockchain Events...");
+impl OpinionMakerGateway {
+    pub fn new(private_key: &str, api_url: &str) -> Self {
+        let wallet = private_key.parse::<LocalWallet>().unwrap()
+            .with_chain_id(137u64);
+            
+        Self {
+            wallet,
+            http_client: reqwest::Client::new(),
+            api_url: api_url.to_string(),
+        }
+    }
 
-    // 3. 订阅 (Subscribe) - 这里的 stream 就是推流
-    let mut stream = provider.subscribe_logs(&filter).await.unwrap();
-
-    // 4. 事件循环
-    while let Some(log) = stream.next().await {
-        // ⚡️ 收到 Log，说明链上刚刚成交了一笔！
-        println!("⚡ [Gateway] On-Chain Trade Detected! Tx: {:?}", log.transaction_hash);
-
-        // 构造一个伪造的 OrderBookUpdate 通知策略引擎去查库存
-        // 或者直接在这里解析 Log 里的 amount 更新库存
-        let update = OrderBookUpdate {
-            exchange: Exchange::OpinionLabs,
-            symbol_id: 0, 
-            timestamp_ns: chrono::Utc::now().timestamp_nanos(),
-            bids: smallvec![], // 链上事件通常不带盘口，只带成交
-            asks: smallvec![],
+    /// 核心方法：将策略信号转化为 EIP-712 签名并发送
+    pub async fn place_order(&self, signal: TradeSignal) -> Result<String, Box<dyn std::error::Error>> {
+        let order_struct = LimitOrder {
+            salt: rand::random::<u128>(),
+            maker: self.wallet.address(),
+            market_id: U256::from(signal.symbol_id),
+            side: if signal.side == Side::Buy { 0 } else { 1 },
+            // [关键修复] 使用 6 位精度 (USDC)
+            price: ethers::utils::parse_units(signal.price, 6)?.into(), 
+            size: ethers::utils::parse_units(signal.size_usd, 6)?.into(),
+            expiration: 0, 
         };
+
+        let signature = self.wallet.sign_typed_data(&order_struct).await?;
+
+        let payload = serde_json::json!({
+            "order": order_struct,
+            "signature": signature.to_string(),
+            "strategy_tag": "RUST_MM_BOT"
+        });
+
+        let resp = self.http_client
+            .post(format!("{}/order", self.api_url))
+            .json(&payload)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let resp_json: serde_json::Value = resp.json().await?;
+            Ok(resp_json["orderId"].as_str().unwrap_or("").to_string())
+        } else {
+            Err(format!("API Error: {:?}", resp.text().await?).into())
+        }
+    }
+
+    /// 极速撤单 (Batch Cancel)
+    /// 做市商保命键：一键撤回所有报价
+    pub async fn cancel_all(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
         
-        zmq_pub.send_book_update(&update);
+        // 签名消息格式需参考官方文档，这里假设为 "CANCEL_ALL_{ts}"
+        let signature = self.wallet.sign_message(format!("CANCEL_ALL_{}", timestamp)).await?;
+
+        self.http_client
+            .delete(format!("{}/orders", self.api_url))
+            .header("X-Signature", signature.to_string())
+            .header("X-Timestamp", timestamp.to_string())
+            .send()
+            .await?;
+            
+        Ok(())
     }
 }

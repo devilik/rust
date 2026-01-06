@@ -52,8 +52,8 @@ impl OpinionMakerGateway {
             market_id: U256::from(signal.symbol_id),
             side: if signal.side == Side::Buy { 0 } else { 1 },
             // 注意精度转换：假设 Opinion 使用 18 位精度
-            price: ethers::utils::parse_ether(signal.price)?, 
-            size: ethers::utils::parse_ether(signal.size_usd)?,
+            price: ethers::utils::parse_units(signal.price, 6)?.into(), 
+            size: ethers::utils::parse_units(signal.size_usd, 6)?.into(),
             expiration: 0, // 0 通常代表 Good-Till-Cancel (GTC)
         };
 

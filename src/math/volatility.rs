@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 pub struct RollingVolatility {
     window_size: usize,
-    returns: VecDeque<f64>, // 存储收益率 (ln(Pt / Pt-1))
+    returns: VecDeque<f64>, // 存 ln(Pt / Pt-1)
     last_price: Option<f64>,
     sum: f64,
     sum_sq: f64,
@@ -31,7 +31,7 @@ impl RollingVolatility {
         };
         self.last_price = Some(new_price);
 
-        // 初始化阶段直接返回 0
+        // 如果是第一个点，由于没有收益率，返回 0
         if ret == 0.0 && self.returns.is_empty() { return 0.0; }
 
         // 2. Welford 增量更新
@@ -53,7 +53,6 @@ impl RollingVolatility {
         let mean = self.sum / n;
         let variance = (self.sum_sq / n) - (mean * mean);
         
-        // 返回单步波动率 (如果要年化需 * sqrt(252*24*60*60/block_time))
         variance.max(0.0).sqrt()
     }
 }
