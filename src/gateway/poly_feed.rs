@@ -8,8 +8,8 @@ use std::str::FromStr;
 use smallvec::smallvec;
 
 /// 启动监听器
-pub async fn run_poly_feed_handler(zmq_pub: ZmqPublisher, market_ids: Vec<String>) {
-    let url = Url::parse("wss://ws-poly.polymarket.com").expect("Invalid URL");
+pub async fn run_poly_feed_handler(zmq_pub: ZmqPublisher, ws_url: String, market_ids: Vec<String>) {
+    let url = Url::parse(&ws_url).expect("Invalid URL in config");
 
     println!("👂 [Gateway] Connecting to Polymarket WS...");
     

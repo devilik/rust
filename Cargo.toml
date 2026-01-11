@@ -15,7 +15,7 @@ rust_decimal = "1.29"
 rust_decimal_macros = "1.29"
 smallvec = "1.10"
 chrono = "0.4"
-
+toml = "0.8"
 # 网络与通信
 reqwest = { version = "0.11", features = ["json"] }
 zmq = "0.10"

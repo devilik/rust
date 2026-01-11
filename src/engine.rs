@@ -12,7 +12,8 @@ use crate::core::{OrderBookUpdate, InventoryUpdate, TradeSignal, Exchange, Side}
 use crate::model::as_logic::{OpinionGridStrategy, StrategyConfig, PersistState};
 use crate::model::risk::RiskManager;
 use crate::infrastructure::messaging::{ZmqSubscriber, ZmqPublisher};
-
+use crate::config::{AppConfig, RiskConfig};
+use crate::model::as_logic::{OpinionGridStrategy, StrategyConfig};
 // --- [Part 1] IO Worker: 异步持久化 ---
 // 这个函数会在后台启动一个线程，专门负责把策略状态写入硬盘
 fn spawn_persistence_worker(file_path: String) -> mpsc::Sender<PersistState> {
@@ -70,7 +71,7 @@ fn load_initial_state(file_path: &str) -> (f64, f64) {
 }
 
 // --- [Main] 策略引擎主函数 ---
-pub fn run_strategy_engine() {
+pub fn run_strategy_engine(app_config: AppConfig) {
     // 1. 设置优雅退出信号 (Graceful Shutdown)
     // 使用 AtomicBool 在不同线程间共享运行状态
     let running = Arc::new(AtomicBool::new(true));
@@ -87,10 +88,9 @@ pub fn run_strategy_engine() {
 
     // 2. 初始化网络层
     // Sub: 接收行情 (Feed) 和 成交回报 (Execution)
-    let sub = ZmqSubscriber::new("tcp://localhost:5555", ""); 
+    let sub = ZmqSubscriber::new(&app_config.network.zmq_sub_endpoint, "");
     // Pub: 发送交易信号 (Signals)
-    let pub_sock = ZmqPublisher::new("tcp://localhost:5556");
-
+    let pub_sock = ZmqPublisher::new(&app_config.network.zmq_exec_endpoint);
     // 3. 初始化持久化层
     let state_file = "./data/strategy_state.json".to_string();
     let _ = fs::create_dir_all("./data");
@@ -101,19 +101,7 @@ pub fn run_strategy_engine() {
     let (init_inv, init_cash) = load_initial_state(&state_file);
 
     // 4. 初始化策略模块 (手工参数配置)
-    let config = StrategyConfig {
-        risk_aversion_gamma: 0.05, // 风险厌恶系数
-        liquidity_k: 5000.0,       // 市场流动性估算
-        min_spread_bps: 50,        // 最小价差 0.5% (覆盖 Gas 和 手续费)
-        tick_size: 0.01,           // 价格最小跳动单位
-        max_inventory_usd: 2000.0, // 此字段仅用于计算辅助，真实限制由 RiskManager 负责
-        
-        // 时间相关参数 (Part 3)
-        // 请替换为真实的市场结束时间戳 (毫秒)
-        maturity_timestamp_ms: 1735689599000, 
-        terminal_dumping_factor: 10.0, // 临近结束时风险厌恶翻 10 倍
-        closing_window_seconds: 3600,  // 最后 1 小时进入清仓模式
-    };
+    let strategy_config = app_config.strategy.clone();
     
     // 注入持久化通道
     let mut strategy = OpinionGridStrategy::new(config, Some(persist_tx));
@@ -122,8 +110,8 @@ pub fn run_strategy_engine() {
 
     // 5. 初始化风控模块 (Part 4)
     let mut risk_manager = RiskManager::new(
-        100.0, // max_drawdown_usd: 最多允许亏损 100 U
-        500.0  // max_order_size_usd: 单笔订单最大 500 U (防肥手指)
+        app_config.risk.max_drawdown_usd,
+        app_config.risk.max_order_size_usd
     );
 
     println!("🧠 [Engine] Active. Cash Ledger: ${:.2} | Inventory: {}", init_cash, init_inv);
