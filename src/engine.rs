@@ -158,7 +158,8 @@ pub fn run_strategy_engine(app_config: AppConfig) {
 
             // A4. 构建交易信号
             let now_ns = chrono::Utc::now().timestamp_nanos();
-            let size_usd = dec!(50); // 默认单笔下单金额，可根据 inventory 动态调整
+            let size_f64 = strategy.cfg.default_order_size_usd; 
+            let size_usd = Decimal::try_from(size_f64).unwrap_or(dec!(50));
 
             // 双边报价 (Bid & Ask)
             let signals = vec![

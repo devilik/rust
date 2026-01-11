@@ -14,6 +14,8 @@ pub struct StrategyConfig {
     pub min_spread_bps: u32,
     pub tick_size: f64,
     pub max_inventory_usd: f64,
+    pub default_order_size_usd: f64, // 新增
+    pub vol_window_size: usize,      // 新增
     // 时间相关
     pub maturity_timestamp_ms: i64,
     pub terminal_dumping_factor: f64,
@@ -47,7 +49,7 @@ impl OpinionGridStrategy {
     pub fn new(cfg: StrategyConfig, sender: Option<Sender<PersistState>>) -> Self {
         Self {
             cfg,
-            vol_calc: RollingVolatility::new(100),
+            vol_calc: RollingVolatility::new(window),
             current_inventory_shares: 0.0,
             current_cash_balance: 0.0, // 初始为 0，等待 restore
             last_equity_mark: 0.0,
@@ -165,8 +167,11 @@ impl OpinionGridStrategy {
     }
 
     fn round_to_tick(price: f64, tick: f64) -> Decimal {
+        // 建议这里也可以把 0.01 和 0.99 参数化，或者暂且保留通用边界
+        // 如果要参数化，需要从 cfg 传入，但这通常是静态函数的难点
+        // 简单做法：把 min/max 逻辑移到 calculate_quotes 内部，不要在 static fn 里做
         let p = (price / tick).round() * tick;
-        let p = p.max(0.01).min(0.99); // 预测市场价格边界
+        // p.max(0.01).min(0.99) ... 
         Decimal::from_f64_retain(p).unwrap_or(dec!(0.5))
     }
 }

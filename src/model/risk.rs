@@ -18,12 +18,12 @@ pub struct RiskManager {
 }
 
 impl RiskManager {
-    pub fn new(max_drawdown: f64, max_order: f64) -> Self {
+    pub fn new(cfg: crate::config::RiskConfig) -> Self {
         Self {
             max_drawdown_usd: max_drawdown,
             max_order_size_usd: max_order,
-            stop_loss_price_floor: dec!(0.02),
-            stop_loss_price_ceiling: dec!(0.98),
+            stop_loss_price_floor: Decimal::try_from(cfg.price_floor).unwrap_or(dec!(0.02)), // 使用配置
+            stop_loss_price_ceiling: Decimal::try_from(cfg.price_ceiling).unwrap_or(dec!(0.98)), // 使用配置
             
             total_pnl: 0.0,
             peak_equity_pnl: 0.0,

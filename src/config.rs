@@ -34,6 +34,8 @@ pub struct MarketsConfig {
 pub struct RiskConfig {
     pub max_drawdown_usd: f64,
     pub max_order_size_usd: f64,
+    pub price_floor: f64,   // 新增
+    pub price_ceiling: f64,
 }
 
 impl AppConfig {
