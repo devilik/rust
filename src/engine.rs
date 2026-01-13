@@ -104,7 +104,7 @@ pub fn run_strategy_engine(app_config: AppConfig) {
     let strategy_config = app_config.strategy.clone();
     
     // 注入持久化通道
-    let mut strategy = OpinionGridStrategy::new(config, Some(persist_tx));
+    let mut strategy = OpinionGridStrategy::new(strategy_config, Some(persist_tx));
     // 恢复之前的“真金白银”状态
     strategy.restore_state(init_inv, init_cash);
 
