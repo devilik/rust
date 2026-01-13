@@ -31,7 +31,7 @@ pub struct PersistState {
 }
 
 pub struct OpinionGridStrategy {
-    cfg: StrategyConfig,
+    pub cfg: StrategyConfig, 
     vol_calc: RollingVolatility,
     
     // 核心状态
@@ -47,9 +47,10 @@ pub struct OpinionGridStrategy {
 
 impl OpinionGridStrategy {
     pub fn new(cfg: StrategyConfig, sender: Option<Sender<PersistState>>) -> Self {
+        let window_size = cfg.vol_window_size;
         Self {
             cfg,
-            vol_calc: RollingVolatility::new(window),
+            vol_calc: RollingVolatility::new(window_size),
             current_inventory_shares: 0.0,
             current_cash_balance: 0.0, // 初始为 0，等待 restore
             last_equity_mark: 0.0,

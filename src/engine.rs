@@ -109,10 +109,7 @@ pub fn run_strategy_engine(app_config: AppConfig) {
     strategy.restore_state(init_inv, init_cash);
 
     // 5. 初始化风控模块 (Part 4)
-    let mut risk_manager = RiskManager::new(
-        app_config.risk.max_drawdown_usd,
-        app_config.risk.max_order_size_usd
-    );
+    let mut risk_manager = RiskManager::new(app_config.risk.clone());
 
     println!("🧠 [Engine] Active. Cash Ledger: ${:.2} | Inventory: {}", init_cash, init_inv);
 
