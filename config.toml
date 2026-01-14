@@ -9,7 +9,7 @@ opinion_api_url = "https://api.opinionlabs.xyz"
 zmq_pub_endpoint = "tcp://*:5555"
 zmq_sub_endpoint = "tcp://localhost:5555"
 zmq_exec_endpoint = "tcp://localhost:5556"
-
+api_key=""
 [markets]
 # 监听的市场 ID 列表
 polymarket_ids = [
