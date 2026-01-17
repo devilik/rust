@@ -124,7 +124,10 @@ pub fn run_strategy_engine(app_config: AppConfig) {
             }
 
             // 2. 计算策略报价 (内部已使用 Effective Inventory)
-            let (new_bid, new_ask) = strategy.calculate_quotes(mid_price);
+            let market_ts_ms = update.timestamp_ns / 1_000_000;
+
+            // [修改] 将时间戳传入策略
+            let (new_bid, new_ask) = strategy.calculate_quotes(mid_price, market_ts_ms);
 
             // 3. 报价过滤器 (Quote Filter)
             let tick = app_config.strategy.tick_size; // 需确保 config 里是 f64

@@ -51,13 +51,21 @@ async fn main() {
     // 3. 启动 Opinion Labs 库存监听 (API 轮询)
     // [修改点] 传入 API URL 和 目标市场 ID，用于获取实时持仓
     let opinion_pub = market_data_pub.clone();
-    // 提取需要的配置字段，避免整个 config 移动的所有权问题（虽然 clone 了但也更清晰）
-    let op_api_url = config.network.opinion_api_url.clone();
-    let target_market_id = config.markets.target_market_id.to_string(); // 转为 String
+    
+    // 注意：文档指出 WS 地址通常是 wss://ws.opinion.trade
+    // 我们可以从 config 读取，或者硬编码 Base URL
+    let ws_url = "wss://ws.opinion.trade".to_string(); 
+    let target_market_id = config.markets.target_market_id.to_string();
+    let api_key = config.network.api_key.clone(); // 确保 Config 中有这个字段
 
     tokio::spawn(async move {
-        println!("👂 [OpinionFeed] Starting chain/API listener for Market ID: {}...", target_market_id);
-        run_opinion_chain_listener(opinion_pub, op_api_url, target_market_id).await;
+        println!("👂 [OpinionFeed] Starting WS listener for Market ID: {}...", target_market_id);
+        run_opinion_ws_inventory_listener(
+            opinion_pub, 
+            ws_url, 
+            target_market_id,
+            api_key
+        ).await;
     });
 
     // 4. 启动执行引擎 (下单/撤单流水线)
@@ -66,7 +74,8 @@ async fn main() {
         println!("🔫 [Execution] Starting execution loop...");
         run_execution_loop(
             exec_config.network.opinion_api_url,
-            exec_config.network.zmq_exec_endpoint
+            exec_config.network.zmq_exec_endpoint, 
+            exec_config.network.api_key
         ).await;
     });
 

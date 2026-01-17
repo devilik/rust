@@ -21,6 +21,19 @@ pub struct SignedOrder {
     chainId = 137,
     verifyingContract = "0x..." 
 )]
+#[derive(Debug, Clone)]
+pub struct SignedOrder {
+    pub payload: serde_json::Value,
+    pub order_id_tag: String,
+}
+
+#[derive(Debug, Clone, Eip712, EthAbiType, Serialize, Deserialize)]
+#[eip712(
+    name = "OpinionExchange",
+    version = "1",
+    chainId = 137,
+    verifyingContract = "0x..." 
+)]
 pub struct LimitOrder {
     pub salt: u128,
     pub maker: Address,
@@ -35,19 +48,20 @@ pub struct OpinionMakerGateway {
     wallet: LocalWallet,
     http_client: reqwest::Client,
     api_url: String,
+    api_key: String, // [新增] API Key 字段
 }
 
 impl OpinionMakerGateway {
-    pub fn new(private_key: &str, api_url: &str) -> Self {
+    // [修改] 构造函数增加 api_key
+    pub fn new(private_key: &str, api_url: &str, api_key: &str) -> Self {
         let wallet = private_key.parse::<LocalWallet>().unwrap()
             .with_chain_id(137u64);
         
-        // [优化点 1] 激进的 HTTP 连接池配置
         let client = reqwest::Client::builder()
-            .tcp_nodelay(true)           // 禁用 Nagle 算法，有数据立即发送
-            .pool_idle_per_host(100)     // 保持更多空闲连接
+            .tcp_nodelay(true)
+            .pool_idle_per_host(100)
             .pool_max_idle_per_host(100)
-            .timeout(Duration::from_secs(2)) // 2秒超时，HFT 不需要等太久
+            .timeout(Duration::from_secs(2))
             .build()
             .expect("Failed to create HTTP client");
             
@@ -55,11 +69,11 @@ impl OpinionMakerGateway {
             wallet,
             http_client: client,
             api_url: api_url.to_string(),
+            api_key: api_key.to_string(), // [新增]
         }
     }
 
-    /// 阶段一：纯 CPU 计算 (签名)
-    /// 这个函数执行非常快，不涉及网络 IO
+    // ... (create_signed_order 保持不变) ...
     pub async fn create_signed_order(&self, signal: TradeSignal) -> Result<SignedOrder, Box<dyn std::error::Error + Send + Sync>> {
         let order_struct = LimitOrder {
             salt: rand::random::<u128>(),
@@ -71,10 +85,8 @@ impl OpinionMakerGateway {
             expiration: 0,
         };
 
-        // 签名 (CPU 密集)
         let signature = self.wallet.sign_typed_data(&order_struct).await?;
 
-        // 构建 Payload
         let payload = serde_json::json!({
             "order": order_struct,
             "signature": signature.to_string(),
@@ -87,35 +99,34 @@ impl OpinionMakerGateway {
         })
     }
 
-    /// 阶段二：纯网络 IO (发送)
-    /// 这里的耗时是不确定的 (50ms - 500ms)
+    /// 阶段二：提交订单
     pub async fn submit_order(&self, signed_order: SignedOrder) -> Result<String, String> {
         let resp = self.http_client
             .post(format!("{}/order", self.api_url))
+            .header("X-Opinion-Api-Key", &self.api_key) // [新增] 鉴权头
             .json(&signed_order.payload)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
         if resp.status().is_success() {
-            // 这里为了追求极致速度，甚至可以不解析 Body，直接返回 OK
             Ok(signed_order.order_id_tag)
         } else {
-            Err(format!("HTTP {}", resp.status()))
+            // 建议打印一下 Body 以便调试
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            Err(format!("HTTP {} - {}", status, text))
         }
     }
 
-    /// 极速撤单 (Batch Cancel)
-    /// 做市商最关键的功能：一键撤回所有报价
+    /// 极速撤单
     pub async fn cancel_all(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // 撤单通常也需要 EIP-712 签名
         let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
-        
-        // 假设撤单只需要签一个时间戳
         let signature = self.wallet.sign_message(format!("CANCEL_ALL_{}", timestamp)).await?;
 
         self.http_client
             .delete(format!("{}/orders", self.api_url))
+            .header("X-Opinion-Api-Key", &self.api_key) // [新增] 鉴权头
             .header("X-Signature", signature.to_string())
             .header("X-Timestamp", timestamp.to_string())
             .send()

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc; // 使用 Tokio 的异步通道
 use std::time::Duration;
 
-pub async fn run_execution_loop(api_url: String, zmq_endpoint: String) {
+pub async fn run_execution_loop(api_url: String, zmq_endpoint: String, api_key: String) {
     // 1. 初始化 ZMQ 订阅者 (监听 "SG" 也就是 Signal 信号)
     let sub = ZmqSubscriber::new(&zmq_endpoint, "SG");
     
@@ -15,7 +15,7 @@ pub async fn run_execution_loop(api_url: String, zmq_endpoint: String) {
     let pk = std::env::var("PRIVATE_KEY").unwrap_or("0xYOUR_PRIVATE_KEY_HERE".to_string());
     
     // 初始化 Gateway (复用 HTTP Client)
-    let gateway = Arc::new(OpinionMakerGateway::new(&pk, &api_url));
+    let gateway = Arc::new(OpinionMakerGateway::new(&pk, &api_url, &api_key));
     println!("🔫 [Execution] Ready. Listening for signals...");
 
     // ------------------------------------------------------------------

@@ -136,8 +136,8 @@ impl OpinionGridStrategy {
     }
 
     /// [核心计算] 这里的公式必须使用 get_effective_inventory()
-    pub fn calculate_quotes(&mut self, poly_mid_price: Decimal) -> (Decimal, Decimal) {
-        let now = chrono::Utc::now().timestamp_millis();
+    pub fn calculate_quotes(&mut self, poly_mid_price: Decimal, current_ts_ms: i64) -> (Decimal, Decimal) {
+        let now = current_ts_ms; 
         let time_left_ms = self.cfg.maturity_timestamp_ms - now;
         
         if time_left_ms <= 0 { return (dec!(0), dec!(0)); }
