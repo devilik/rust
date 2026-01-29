@@ -1,6 +1,13 @@
 use serde::Deserialize;
 use crate::model::as_logic::StrategyConfig;
 
+pub fn load_config(path: &str) -> AppConfig {
+    match AppConfig::load(path) {
+        Ok(cfg) => cfg,
+        Err(e) => panic!("❌ Failed to load configuration from '{}': {}", path, e),
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub system: SystemConfig,

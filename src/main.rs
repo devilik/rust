@@ -1,13 +1,7 @@
 // File: src/main.rs
 
-mod infrastructure;
-mod model;
-mod math;
-mod gateway;
-mod engine;
-mod execution;
-mod core;
-mod config; 
+use enterprise_market_maker::config::load_config;
+use enterprise_market_maker::engine::run_strategy_engine;
 
 use infrastructure::messaging::ZmqPublisher;
 use gateway::poly_feed::run_poly_feed_handler;

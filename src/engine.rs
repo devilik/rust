@@ -6,14 +6,15 @@ use std::fs;
 use std::time::Duration;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
-use rust_decimal::Decimal; // 确保引入 Decimal
+use rust_decimal::Decimal; 
 
 // 引入核心模块
 use crate::core::{OrderBookUpdate, InventoryUpdate, TradeSignal, Exchange, Side};
-use crate::model::as_logic::{OpinionGridStrategy, PersistState}; // 引入 PersistState
+use crate::model::as_logic::{OpinionGridStrategy, PersistState}; 
 use crate::model::risk::RiskManager;
 use crate::infrastructure::messaging::{ZmqSubscriber, ZmqPublisher};
 use crate::config::AppConfig;
+use chrono::Utc;
 
 // --- [Part 1] IO Worker: 异步持久化 ---
 fn spawn_persistence_worker(file_path: String) -> mpsc::Sender<PersistState> {
@@ -32,7 +33,6 @@ fn spawn_persistence_worker(file_path: String) -> mpsc::Sender<PersistState> {
                 latest_state = newer_state;
             }
 
-            // [修改点 1] 字段名改为 realized_inventory
             let json = serde_json::json!({
                 "realized_inventory": latest_state.realized_inventory, 
                 "cash_balance": latest_state.cash_balance,
@@ -51,11 +51,9 @@ fn spawn_persistence_worker(file_path: String) -> mpsc::Sender<PersistState> {
     tx
 }
 
-// [修改点 2] 读取初始状态时，读取 realized_inventory
 fn load_initial_state(file_path: &str) -> (f64, f64) {
     if let Ok(content) = fs::read_to_string(file_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-            // 注意这里读的是 realized_inventory
             let inv = v["realized_inventory"].as_f64().unwrap_or(0.0);
             let cash = v["cash_balance"].as_f64().unwrap_or(0.0);
             return (inv, cash);
@@ -91,11 +89,16 @@ pub fn run_strategy_engine(app_config: AppConfig) {
 
     let mut risk_manager = RiskManager::new(app_config.risk);
 
-    // [新增] 报价节流器
+    // [新增] 报价节流器 & 价格缓存
     let mut last_bid = dec!(0);
     let mut last_ask = dec!(0);
+    
+    // [关键修改] 分别记录不同市场的价格
+    let mut poly_mid_price = dec!(0);
+    let mut opinion_last_price = dec!(0);
 
-    println!("🧠 [Engine] Active. Realized Inv: {} | Cash: ${:.2}", init_inv, init_cash);
+    println!("🧠 [Engine] Active. Source: {} | Realized Inv: {} | Cash: ${:.2}", 
+        app_config.strategy.pricing_source, init_inv, init_cash);
 
     while running.load(Ordering::SeqCst) {
         let msg = match sub.recv_raw_bytes() {
@@ -106,53 +109,90 @@ pub fn run_strategy_engine(app_config: AppConfig) {
             }
         };
 
-        // --- A. 处理行情 ---
+        // --- A. 处理行情 (Market Data) ---
         if let Ok(update) = bincode::deserialize::<OrderBookUpdate>(&msg) {
-            let best_bid = update.bids.get(0).map(|x| x.0).unwrap_or(dec!(0));
-            let best_ask = update.asks.get(0).map(|x| x.0).unwrap_or(dec!(0));
             
-            if best_bid.is_zero() || best_ask.is_zero() { continue; }
-            let mid_price = (best_bid + best_ask) / dec!(2);
-            let mid_f64 = mid_price.to_f64().unwrap_or(0.0);
+            // 1. 根据数据源更新价格缓存
+            match update.exchange {
+                Exchange::Polymarket => {
+                    let best_bid = update.bids.get(0).map(|x| x.0).unwrap_or(dec!(0));
+                    let best_ask = update.asks.get(0).map(|x| x.0).unwrap_or(dec!(0));
+                    if !best_bid.is_zero() && !best_ask.is_zero() {
+                        poly_mid_price = (best_bid + best_ask) / dec!(2);
+                    }
+                },
+                Exchange::OpinionLabs => {
+                    // OpinionFeed 发送过来的"虚拟盘口" bids[0] 就是 last price
+                    if let Some(price) = update.bids.get(0) {
+                        if !price.0.is_zero() {
+                            opinion_last_price = price.0;
+                        }
+                    }
+                },
+                _ => {}
+            }
 
-            // 1. 风控检查
-            let pnl_change = strategy.calculate_equity_change(mid_f64);
+            // 2. [核心决策] 选取锚定价格 (Anchor Price)
+            let anchor_price = match app_config.strategy.pricing_source.as_str() {
+                "opinion" => {
+                    // 如果还没有收到 Opinion 的成交价，暂时跳过或者使用 Poly 兜底
+                    if opinion_last_price.is_zero() { 
+                        if !poly_mid_price.is_zero() { poly_mid_price } else { continue; }
+                    } else {
+                        opinion_last_price
+                    }
+                },
+                _ => {
+                    // 默认使用 Polymarket
+                    if poly_mid_price.is_zero() { continue; }
+                    poly_mid_price
+                }
+            };
+            
+            let anchor_f64 = anchor_price.to_f64().unwrap_or(0.0);
+
+            // 3. 风控检查 (PnL Check)
+            // 注意：计算权益变化最好总是使用"当前市场公允价"，这里我们也可以用 anchor_price
+            let pnl_change = strategy.calculate_equity_change(anchor_f64);
             if risk_manager.update_pnl_and_check_kill(pnl_change) {
                 println!("🛑 System Halted due to Risk Trigger.");
                 send_emergency_cancel(&pub_sock);
                 break; 
             }
 
-            // 2. 计算策略报价 (内部已使用 Effective Inventory)
+            // 4. 计算策略报价
+            // 将 anchor_price 传入模型
             let market_ts_ms = update.timestamp_ns / 1_000_000;
+            let (new_bid, new_ask) = strategy.calculate_quotes(anchor_price, market_ts_ms);
 
-            // [修改] 将时间戳传入策略
-            let (new_bid, new_ask) = strategy.calculate_quotes(mid_price, market_ts_ms);
-
-            // 3. 报价过滤器 (Quote Filter)
-            let tick = app_config.strategy.tick_size; // 需确保 config 里是 f64
+            // 5. 报价过滤器 (Quote Filter) - 防止微小波动频繁撤单
+            let tick = app_config.strategy.tick_size; 
             let tick_dec = Decimal::try_from(tick).unwrap_or(dec!(0.01));
+            
             let diff_bid = (new_bid - last_bid).abs();
             let diff_ask = (new_ask - last_ask).abs();
             
-            // 只有价格变动超过半个 tick 才更新，避免刷单
+            // 只有变化超过半个 tick 才更新
             if diff_bid < (tick_dec / dec!(2)) && diff_ask < (tick_dec / dec!(2)) {
                 continue;
             }
             last_bid = new_bid;
             last_ask = new_ask;
 
-            // 4. 构建信号
-            let now_ns = chrono::Utc::now().timestamp_nanos();
-            // 注意：这里需要从 config 读取默认下单金额
+            // 6. 构建信号
+            let now_ns = Utc::now().timestamp_nanos();
             let size_f64 = app_config.strategy.default_order_size_usd; 
             let size_usd = Decimal::try_from(size_f64).unwrap_or(dec!(10));
+
+            // 注意：Opinion 市场 ID 应该从 Config 读取目标 ID，而不是直接用 Update 里的 ID
+            // 因为 Update 可能是 Poly 的 ID。我们要往 Opinion 发单。
+            let target_symbol_id = app_config.markets.target_market_id;
 
             let signals = vec![
                 TradeSignal {
                     strategy_id: 1,
                     target_exchange: Exchange::OpinionLabs,
-                    symbol_id: update.symbol_id,
+                    symbol_id: target_symbol_id, // 修正：始终针对目标市场发单
                     side: Side::Buy,
                     price: new_bid,
                     size_usd,
@@ -162,7 +202,7 @@ pub fn run_strategy_engine(app_config: AppConfig) {
                 TradeSignal {
                     strategy_id: 1,
                     target_exchange: Exchange::OpinionLabs,
-                    symbol_id: update.symbol_id,
+                    symbol_id: target_symbol_id,
                     side: Side::Sell,
                     price: new_ask,
                     size_usd,
@@ -171,21 +211,25 @@ pub fn run_strategy_engine(app_config: AppConfig) {
                 }
             ];
 
-            // 5. 发送并 [乐观登记]
+            // 7. 发送并 [乐观登记]
             for signal in signals {
+                // 再次检查价格是否离谱 (针对 anchor_price 的硬性保护)
+                // 防止模型算出负数或者极大值
+                if signal.price <= dec!(0.01) || signal.price >= dec!(0.99) {
+                    continue;
+                }
+
                 if risk_manager.check_signal(&signal) {
-                    // [修改点 3] 先在策略里“登记”这笔单子 (更新 Pending)
+                    // 登记 Pending
                     strategy.on_signal_created(signal.side, signal.price, signal.size_usd);
-                    
-                    // 然后再发出去
+                    // 发送
                     pub_sock.send_signal(&signal);
                 }
             }
         } 
-        // --- B. 处理成交/库存更新 ---
+        // --- B. 处理成交/库存更新 (Inventory Sync) ---
         else if let Ok(inv_update) = bincode::deserialize::<InventoryUpdate>(&msg) {
-            // [修改点 4] 确认成交，核销 Pending，更新 Realized
-            // 注意：这需要 Gateway 发送的是增量 (Change)，而不是总量
+            // 收到成交回报 -> 更新真实库存 -> 核销 Pending
             strategy.on_fill_confirmed(inv_update.change, inv_update.cost_usd);
             
             println!("⚖️ [Inventory Sync] Realized: {:.2} | Pending: {:.2} | Eff: {:.2}", 

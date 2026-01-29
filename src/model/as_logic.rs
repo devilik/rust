@@ -7,7 +7,7 @@ use crate::core::Side;
 use serde::{Serialize, Deserialize};
 use std::sync::mpsc::Sender;
 
-// --- 配置部分 (保持不变) ---
+// --- 配置部分 ---
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StrategyConfig {
     pub risk_aversion_gamma: f64,
@@ -20,6 +20,15 @@ pub struct StrategyConfig {
     pub maturity_timestamp_ms: i64,
     pub terminal_dumping_factor: f64,
     pub closing_window_seconds: i64,
+    
+    // [新增] 定价源选择: "polymarket" (默认) 或 "opinion"
+    #[serde(default = "default_pricing_source")]
+    pub pricing_source: String, 
+}
+
+// [新增] 默认值函数
+fn default_pricing_source() -> String {
+    "polymarket".to_string()
 }
 
 // --- 持久化状态结构 ---
@@ -136,7 +145,7 @@ impl OpinionGridStrategy {
     }
 
     /// [核心计算] 这里的公式必须使用 get_effective_inventory()
-    pub fn calculate_quotes(&mut self, poly_mid_price: Decimal, current_ts_ms: i64) -> (Decimal, Decimal) {
+    pub fn calculate_quotes(&mut self, anchor_price: Decimal, current_ts_ms: i64) -> (Decimal, Decimal) {
         let now = current_ts_ms; 
         let time_left_ms = self.cfg.maturity_timestamp_ms - now;
         
@@ -152,8 +161,9 @@ impl OpinionGridStrategy {
             self.cfg.risk_aversion_gamma
         };
 
-        let sigma = self.vol_calc.update(poly_mid_price);
-        let mid_f64 = poly_mid_price.to_f64().unwrap_or(0.5);
+        // 计算波动率 (使用传入的 anchor_price)
+        let sigma = self.vol_calc.update(anchor_price);
+        let mid_f64 = anchor_price.to_f64().unwrap_or(0.5);
         
         // --- 关键点：使用 Effective Inventory ---
         let current_inv = self.get_effective_inventory();
@@ -178,10 +188,9 @@ impl OpinionGridStrategy {
         )
     }
 
-    // PnL 计算也要用 Realized 还是 Effective? 
-    // 风控通常看 Realized (因为那是真正会爆仓的)，但预估回撤可以用 Effective
+    // PnL 计算
     pub fn calculate_equity_change(&mut self, current_mid_price: f64) -> f64 {
-        // 这里保守一点，使用 Realized 计算资金权益，因为 pending 还没扣钱
+        // 这里保守一点，使用 Realized 计算资金权益
         let position_value = self.realized_inventory * current_mid_price;
         let current_equity = self.current_cash_balance + position_value;
 
